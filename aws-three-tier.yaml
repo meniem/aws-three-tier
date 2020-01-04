@@ -1,0 +1,947 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'VPC: public and private subnets in two availability zones'
+
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+    - Label:
+        default: 'VPC Parameters'
+      Parameters:
+      - ClassB
+
+###############################################################################################################
+
+Parameters:
+  ClassB:
+    Description: 'Class B of VPC (10.XXX.0.0/16)'
+    Type: Number
+    Default: 0
+    ConstraintDescription: 'Must be in the range [0-255]'
+    MinValue: 0
+    MaxValue: 255
+
+  InstanceType:
+    Description: Application EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t2.medium
+    ConstraintDescription: Must be a valid EC2 instance type.
+
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Default: XXXX-key
+    MinLength: '1'
+    MaxLength: '255'
+    AllowedPattern: '[\x20-\x7E]*'
+    ConstraintDescription: Must contain only ASCII characters.
+
+  RootVolumeSize:
+    Description: Size (GB) of root EBS volume for application instance
+    Type: Number
+    Default: '8'
+    MinValue: '8'
+    MaxValue: '50'
+
+  SubnetAvailabilityZone:
+    Description: Availability Zone for Application server
+    Type: String
+    Default: eu-west-1a
+    AllowedValues:
+      - eu-west-1a
+      - eu-west-1b
+      - eu-west-1c
+    ConstraintDescription: Must be a valid Availability zone.
+
+  JenkinsPort:
+    Description: The Port that will be used to access Jenkins (Must be port 1024 or above, unless changing jenkins user).
+    Type: Number
+    MinValue: 1024
+    MaxValue: 65535
+    Default: 8080
+
+
+###############################################################################################################
+
+Resources:
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !Sub '10.${ClassB}.0.0/16'
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags:
+      - Key: Name
+        Value: !Sub '10.${ClassB}.0.0/16'
+
+
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+      - Key: Name
+        Value: !Sub '10.${ClassB}.0.0/16'
+
+
+  VPCGatewayAttachment:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+
+  SubnetAPublic:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Sub '10.${ClassB}.0.0/20'
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: 'A public'
+      - Key: Reach
+        Value: public
+
+
+  SubnetAPrivate:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Sub '10.${ClassB}.16.0/20'
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: 'A private'
+      - Key: Reach
+        Value: private
+
+
+
+  SubnetBPrivate:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Sub '10.${ClassB}.48.0/20'
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: 'B private'
+      - Key: Reach
+        Value: private
+  
+
+
+
+  RouteTablePublic: # should be RouteTableAPublic, but logical id was not changed for backward compatibility
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: 'A Public'
+ 
+
+  RouteTablePrivate: # should be RouteTableAPrivate, but logical id was not changed for backward compatibility
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: 'A Private'
+  
+
+  RouteTableBPrivate:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: 'B Private'
+  
+
+  RouteTableAssociationAPublic:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetAPublic
+      RouteTableId: !Ref RouteTablePublic
+  
+
+  RouteTableAssociationAPrivate:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetAPrivate
+      RouteTableId: !Ref RouteTablePrivate
+ 
+
+  RouteTableAssociationBPrivate:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref SubnetBPrivate
+      RouteTableId: !Ref RouteTableBPrivate
+  
+
+  RouteTablePublicInternetRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTablePublic
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+  
+
+  NetworkAclPublic:
+    Type: 'AWS::EC2::NetworkAcl'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: Public
+  
+  NetworkAclPrivate:
+    Type: 'AWS::EC2::NetworkAcl'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: Private
+ 
+
+  SubnetNetworkAclAssociationAPublic:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Properties:
+      SubnetId: !Ref SubnetAPublic
+      NetworkAclId: !Ref NetworkAclPublic
+  
+
+  SubnetNetworkAclAssociationAPrivate:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Properties:
+      SubnetId: !Ref SubnetAPrivate
+      NetworkAclId: !Ref NetworkAclPrivate
+  
+
+  SubnetNetworkAclAssociationBPrivate:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Properties:
+      SubnetId: !Ref SubnetBPrivate
+      NetworkAclId: !Ref NetworkAclPrivate
+  
+
+  NetworkAclEntryInPublicAllowAll:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref NetworkAclPublic
+      RuleNumber: 99
+      Protocol: 6
+      RuleAction: allow
+      Egress: false
+      CidrBlock: '0.0.0.0/0'
+      PortRange:
+        From: '443'
+        To: '443'
+
+  
+  NetworkAclEntryOutPublicAllowAll:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref NetworkAclPublic
+      RuleNumber: 99
+      Protocol: -1
+      RuleAction: allow
+      Egress: true
+      CidrBlock: '0.0.0.0/0'
+  
+
+  NetworkAclEntryInPrivateAAllowVPC:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref NetworkAclPrivate
+      RuleNumber: 99
+      Protocol: 6
+      RuleAction: allow
+      Egress: false
+      CidrBlock: !Sub '10.${ClassB}.0.0/20'
+      PortRange:
+        From: '443'
+        To: '443'
+
+
+  NetworkAclEntryInPrivateBAllowVPC:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref NetworkAclPrivate
+      RuleNumber: 98
+      Protocol: 6
+      RuleAction: allow
+      Egress: false
+      CidrBlock: !Sub '10.${ClassB}.16.0/20'
+      PortRange:
+        From: '3306'
+        To: '3306'
+
+
+  NetworkAclEntryOutPrivateAllowVPC:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref NetworkAclPrivate
+      RuleNumber: 99
+      Protocol: -1
+      RuleAction: allow
+      Egress: true
+      CidrBlock: '0.0.0.0/0'
+
+
+  PublicSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all outbound and inbound from 443
+      VpcId:
+        Ref: VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+
+
+  PrivateASecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all outbound and inbound from 443
+      VpcId:
+        Ref: VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Sub '10.${ClassB}.0.0/20'
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+
+
+  PrivateBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow all outbound and inbound from 3306
+      VpcId:
+        Ref: VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: !Sub '10.${ClassB}.16.0/20'
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+
+  UbuntuUser:
+    Type: AWS::IAM::User
+    Properties:
+      Path: "/"
+      Policies:
+        - PolicyName: UbuntuUserAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+
+  UserHostKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName:
+        Ref: UbuntuUser
+
+
+  TomCatInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      AvailabilityZone:
+        Ref: 'SubnetAvailabilityZone'
+      ImageId: 'ami-01e6a0b85de033c99'
+      InstanceType:
+        Ref: InstanceType
+      KeyName:
+        Ref: KeyName
+      SecurityGroupIds:
+        - Ref: PrivateASecurityGroup
+      SubnetId:
+        Ref: SubnetAPrivate
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize:
+              Ref: RootVolumeSize
+            VolumeType: gp2
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -ex
+            - |
+              apt-get update
+            - |
+              apt-get -y install python-setuptools
+            - |
+              mkdir aws-cfn-bootstrap-latest
+            - >
+              curl
+              https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+              | tar xz -C aws-cfn-bootstrap-latest
+              --strip-components 1
+            - |
+              easy_install aws-cfn-bootstrap-latest
+            - '/usr/local/bin/cfn-init --stack '
+            - !Ref 'AWS::StackName'
+            - ' --resource TomCatInstance'
+            - ' --region '
+            - !Ref 'AWS::Region'
+            - '/usr/local/bin/cfn-signal --exit-code $? '
+            - |
+              service tomcat7 start
+              '
+    Metadata:
+      "AWS::CloudFormation::Init":
+        config:
+          packages:
+            apt:
+              java-1.6.0-openjdk: []
+              tomcat6: []
+              httpd: []
+
+
+
+
+
+
+  MySQLMaster1:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      AvailabilityZone: 'eu-west-1b'
+      ImageId: 'ami-01e6a0b85de033c99'
+      InstanceType:
+        Ref: InstanceType
+      KeyName:
+        Ref: KeyName
+      SecurityGroupIds:
+        - Ref: PrivateBSecurityGroup
+      SubnetId:
+        Ref: SubnetBPrivate
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize:
+              Ref: RootVolumeSize
+            VolumeType: gp2
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -ex
+            - |
+              apt-get update
+            - |
+              apt-get -y install python-setuptools
+            - |
+              mkdir aws-cfn-bootstrap-latest
+            - >
+              curl
+              https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+              | tar xz -C aws-cfn-bootstrap-latest
+              --strip-components 1
+            - |
+              easy_install aws-cfn-bootstrap-latest
+            - '/usr/local/bin/cfn-init --stack '
+            - !Ref 'AWS::StackName'
+            - ' --resource MySQLMaster1'
+            - ' --region '
+            - !Ref 'AWS::Region'
+            - '/usr/local/bin/cfn-signal --exit-code $? '
+            - |
+              service mysqld restart
+              '
+    Metadata:
+      "AWS::CloudFormation::Init":
+        configSets:
+          InstallAndRun:
+            - Install
+            - Configure
+        Install:
+          packages:
+            apt:
+              mysql-server: []
+          files:
+            /etc/mysql/my.cnf:
+              content: !Join
+                - ''
+                - - |
+                    server-id               = 1
+                  - |
+                    log_bin                 = /var/log/mysql/mysql-bin.log
+                  - |
+                    binlog_do_db            = masterdb
+                  - |
+                    # bind-address            = 127.0.0.1
+              mode: '000400'
+              owner: root
+              group: root
+            /tmp/setup.mysql:
+              content: !Join
+                - ''
+                - - 'CREATE DATABASE '
+                  - master1
+                  - |2
+                     CHARACTER SET utf8 COLLATE utf8_general_ci;
+                  - 'GRANT ALL ON '
+                  - master1
+                  - .* TO '
+                  - replicatoruser
+                  - '''@localhost IDENTIFIED BY '''
+                  - replicatorpassword
+                  - |
+                    ';
+                  - 'grant select,insert,update on '
+                  - master1
+                  - |
+                    .* to 'yours';
+              mode: '000400'
+              owner: root
+              group: root
+
+            /etc/cfn/cfn-hup.conf:
+              content: !Join
+                - ''
+                - - |
+                    [main]
+                  - stack=
+                  - !Ref 'AWS::StackId'
+              mode: '000400'
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Join
+                - ''
+                - - |
+                    [cfn-auto-reloader-hook]
+                  - |
+                    triggers=post.update
+                  - >
+                    path=Resources.WebServerInstance.Metadata.AWS::CloudFormation::Init
+                  - 'action=/opt/aws/bin/cfn-init -v '
+                  - '         --stack '
+                  - !Ref 'AWS::StackName'
+                  - '         --resource WebServerInstance '
+                  - '         --configsets InstallAndRun '
+                  - '         --region '
+                  - !Ref 'AWS::Region'
+                  - |+
+
+                  - |
+                    runas=root
+              mode: '000400'
+              owner: root
+              group: root
+
+          services:
+            sysvinit:
+              mysqld:
+                enabled: 'true'
+                ensureRunning: 'true'
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+        Configure:
+          commands:
+            01_set_mysql_root_password:
+              command: !Join 
+              - ''
+              - - mysqladmin -u root password '
+                - root
+                - ''''
+            02_create_database:
+              command: !Join
+              - ''
+              - - mysql -u root --password='
+                - root
+                - ''' < /tmp/setup.mysql'
+
+
+
+  MySQLMaster2:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      AvailabilityZone: 'eu-west-1b'
+      ImageId: 'ami-01e6a0b85de033c99'
+      InstanceType:
+        Ref: InstanceType
+      KeyName:
+        Ref: KeyName
+      SecurityGroupIds:
+        - Ref: PrivateBSecurityGroup
+      SubnetId:
+        Ref: SubnetBPrivate
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize:
+              Ref: RootVolumeSize
+            VolumeType: gp2
+      UserData: !Base64
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -ex
+            - |
+              apt-get update
+            - |
+              apt-get -y install python-setuptools
+            - |
+              mkdir aws-cfn-bootstrap-latest
+            - >
+              curl
+              https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+              | tar xz -C aws-cfn-bootstrap-latest
+              --strip-components 1
+            - |
+              easy_install aws-cfn-bootstrap-latest
+            - '/usr/local/bin/cfn-init --stack '
+            - !Ref 'AWS::StackName'
+            - ' --resource MySQLMaster2'
+            - ' --region '
+            - !Ref 'AWS::Region'
+            - '/usr/local/bin/cfn-signal --exit-code $? '
+            - |
+              service mysqld restart
+              '
+    Metadata:
+      "AWS::CloudFormation::Init":
+        configSets:
+          InstallAndRun:
+            - Install
+            - Configure
+        Install:
+          packages:
+            apt:
+              mysql-server: []
+          files:
+            /etc/mysql/my.cnf:
+              content: !Join
+                - ''
+                - - |
+                    server-id               = 2
+                  - |
+                    log_bin                 = /var/log/mysql/mysql-bin.log
+                  - |
+                    binlog_do_db            = masterdb
+                  - |
+                    # bind-address            = 127.0.0.1
+              mode: '000400'
+              owner: root
+              group: root
+            /tmp/setup.mysql:
+              content: !Join
+                - ''
+                - - 'CREATE DATABASE '
+                  - master2
+                  - |2
+                     CHARACTER SET utf8 COLLATE utf8_general_ci;
+                  - 'GRANT ALL ON '
+                  - master2
+                  - .* TO '
+                  - replicatoruser
+                  - '''@localhost IDENTIFIED BY '''
+                  - replicatorpassword
+                  - |
+                    ';
+                  - 'grant select,insert,update on '
+                  - master2
+                  - |
+                    .* to 'yours';
+              mode: '000400'
+              owner: root
+              group: root
+            /etc/cfn/cfn-hup.conf:
+              content: !Join
+                - ''
+                - - |
+                    [main]
+                  - stack=
+                  - !Ref 'AWS::StackId'
+              mode: '000400'
+              owner: root
+              group: root
+            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+              content: !Join
+                - ''
+                - - |
+                    [cfn-auto-reloader-hook]
+                  - |
+                    triggers=post.update
+                  - >
+                    path=Resources.WebServerInstance.Metadata.AWS::CloudFormation::Init
+                  - 'action=/opt/aws/bin/cfn-init -v '
+                  - '         --stack '
+                  - !Ref 'AWS::StackName'
+                  - '         --resource WebServerInstance '
+                  - '         --configsets InstallAndRun '
+                  - '         --region '
+                  - !Ref 'AWS::Region'
+                  - |+
+
+                  - |
+                    runas=root
+              mode: '000400'
+              owner: root
+              group: root
+
+          services:
+            sysvinit:
+              mysqld:
+                enabled: 'true'
+                ensureRunning: 'true'
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+        Configure:
+          commands:
+            01_set_mysql_root_password:
+              command: !Join 
+              - ''
+              - - mysqladmin -u root password '
+                - root
+                - ''''
+            02_create_database:
+              command: !Join
+              - ''
+              - - mysql -u root --password='
+                - root
+                - ''' < /tmp/setup.mysql'
+
+
+
+  JenkinsInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      AvailabilityZone:
+        Ref: 'SubnetAvailabilityZone'
+      ImageId: 'ami-0862aabda3fb488b5'
+      InstanceType:
+        Ref: InstanceType
+      KeyName:
+        Ref: KeyName
+      SecurityGroupIds:
+        - Ref: PublicSecurityGroup
+      SubnetId:
+        Ref: SubnetAPublic
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize:
+              Ref: RootVolumeSize
+            VolumeType: gp2
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -x
+          /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource JenkinsInstance --region ${AWS::Region}
+          /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region} --stack ${AWS::StackName} --resource JenkinsInstance
+
+    Metadata:
+      "AWS::CloudFormation::Init":
+        # configSets is used when there are multiple configs that you want to run, for multiple instances. If not needed then just config (default) is adequate.
+        configSets:
+          default: [mountVolume, config, jenkinsConfig]
+        # This configSet will define how we handle the additional EBS volume that we create with the Instance. We will mount the volume in /var/lib/Jenkins
+        mountVolume:
+          commands:
+            01_mkdir:
+              command: sudo mkdir -p /var/lib/jenkins
+            02_fdisk:
+              command: echo -e "o\nn\np\n1\n\n\nw" | sudo fdisk /dev/sdb
+            03_wait:
+              command: sleep 3
+            04_mkfs:
+              command: sudo mkfs.ext4 /dev/sdb1
+            05_disk_label:
+              command: e2label /dev/sdb1 JENKINS
+            06_fstab:
+              command: echo -e "LABEL=JENKINS     /var/lib/jenkins    ext4   defaults 0 0" >> /etc/fstab
+            07_mount:
+              command: mount -a
+        # This configSet will perform the actual installation of Jenkins
+        jenkinsConfig:
+          packages:
+            yum:
+              wget: []
+              java-1.8.0-openjdk: []
+              java-1.8.0-openjdk-devel: []
+              net-tools: []
+              git: []
+              jq: []
+          commands:
+            01_epel_repo:
+              command: sudo rpm -ivh https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+            02_jenkins_repo:
+              command: sudo wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins-ci.org/redhat/jenkins.repo
+            03_yum_clean:
+              command: yum clean all
+            04_jenkins_key:
+              command: sudo rpm --import https://jenkins-ci.org/redhat/jenkins-ci.org.key
+            05_jenkins_dirs:
+              command: sudo mkdir -p /home/jenkins /var/lib/jenkins/.ssh /var/cache/jenkins/war /var/log/jenkins
+            06_jenkins_install:
+              command: sudo yum install -y jenkins
+            07_check_jenkins_login:
+              command: usermod -s /bin/bash jenkins
+            08_set_jenkins_port:
+              command: !Sub |
+                sudo sed -i "s/JENKINS_PORT=\"8080\"/JENKINS_PORT=\"${JenkinsPort}\"/g" /etc/sysconfig/jenkins
+            09_sshconfig:
+              command: sudo echo -e "Host *\n\tStrictHostKeyChecking no\n" >> /var/lib/jenkins/.ssh/config
+            10_ssh_keygen:
+              command: sudo ssh-keygen -t rsa -b 2048 -C jenkins@jenkins -N "" -f /var/lib/jenkins/.ssh/id_rsa; sudo cat /var/lib/jenkins/.ssh/id_rsa.pub > /var/lib/jenkins/.ssh/authorized_keys
+            11_set_permissions:
+              command: sudo chown -R jenkins:jenkins /home/jenkins /var/lib/jenkins /var/cache/jenkins /var/log/jenkins; sudo chmod 0700 /var/lib/jenkins/.ssh; sudo chmod 0600 /var/lib/jenkins/.ssh/*
+            12_firewall:
+              command: !Sub |
+                sudo firewall-cmd --permanent --add-service=ssh; sudo firewall-cmd --permanent --add-port='${JenkinsPort}'/tcp; sudo firewall-cmd --reload
+          services:
+            sysvinit:
+              jenkins:
+                enabled: true
+                ensureRunning: true
+        # Default Config, which handles installing the firewall, and CFN components to talk back to CloudFormation
+        config:
+          packages:
+            yum:
+              firewalld: []
+          commands:
+            01_update:
+              command: yum -y update
+          files:
+            '/etc/cfn/cfn-hup.conf':
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=1
+              mode: '000400'
+              owner: root
+              group: root
+            '/etc/cfn/hooks.d/cfn-auto-reloader.conf':
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.JenkinsInstance.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init --verbose --stack=${AWS::StackName} --region=${AWS::Region} --resource=JenkinsInstance
+                runas=root
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: true
+                ensureRunning: true
+                files:
+                  - '/etc/cfn/cfn-hup.conf'
+                  - '/etc/cfn/hooks.d/cfn-auto-reloader.conf'
+              firewalld:
+                enabled: true
+                ensureRunning: true
+
+###############################################################################################################
+
+Outputs:
+  TemplateID:
+    Description: 'cloudonaut.io template id.'
+    Value: 'vpc/vpc-2azs'
+  TemplateVersion:
+    Description: 'cloudonaut.io template version.'
+    Value: '10.1.0'
+  StackName:
+    Description: 'Stack name.'
+    Value: !Sub '${AWS::StackName}'
+  AZs:
+    Description: 'AZs'
+    Value: 2
+    Export:
+      Name: !Sub '${AWS::StackName}-AZs'
+  AZA:
+    Description: 'AZ of A'
+    Value: !Select [0, !GetAZs '']
+    Export:
+      Name: !Sub '${AWS::StackName}-AZA'
+  AZB:
+    Description: 'AZ of B'
+    Value: !Select [1, !GetAZs '']
+    Export:
+      Name: !Sub '${AWS::StackName}-AZB'
+  CidrBlock:
+    Description: 'The set of IP addresses for the VPC.'
+    Value: !GetAtt 'VPC.CidrBlock'
+    Export:
+      Name: !Sub '${AWS::StackName}-CidrBlock'
+  VPC:
+    Description: 'VPC.'
+    Value: !Ref VPC
+    Export:
+      Name: !Sub '${AWS::StackName}-VPC'
+  SubnetsPrivate:
+    Description: 'Subnets private.'
+    Value: !Join [',', [!Ref SubnetAPrivate, !Ref SubnetBPrivate]]
+    Export:
+      Name: !Sub '${AWS::StackName}-SubnetsPrivate'
+  RouteTablesPrivate:
+    Description: 'Route tables private.'
+    Value: !Join [',', [!Ref RouteTablePrivate, !Ref RouteTableBPrivate]]
+    Export:
+      Name: !Sub '${AWS::StackName}-RouteTablesPrivate'
+  SubnetAPublic:
+    Description: 'Subnet A public.'
+    Value: !Ref SubnetAPublic
+    Export:
+      Name: !Sub '${AWS::StackName}-SubnetAPublic'
+  RouteTableAPublic:
+    Description: 'Route table A public.'
+    Value: !Ref RouteTablePublic
+    Export:
+      Name: !Sub '${AWS::StackName}-RouteTableAPublic'
+  SubnetAPrivate:
+    Description: 'Subnet A private.'
+    Value: !Ref SubnetAPrivate
+    Export:
+      Name: !Sub '${AWS::StackName}-SubnetAPrivate'
+  RouteTableAPrivate:
+    Description: 'Route table A private.'
+    Value: !Ref RouteTablePrivate
+    Export:
+      Name: !Sub '${AWS::StackName}-RouteTableAPrivate'
+  SubnetBPrivate:
+    Description: 'Subnet B private.'
+    Value: !Ref SubnetBPrivate
+    Export:
+      Name: !Sub '${AWS::StackName}-SubnetBPrivate'
+  RouteTableBPrivate:
+    Description: 'Route table B private.'
+    Value: !Ref RouteTableBPrivate
+    Export:
+      Name: !Sub '${AWS::StackName}-RouteTableBPrivate'
