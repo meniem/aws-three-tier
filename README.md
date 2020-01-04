@@ -17,7 +17,7 @@ The CloudFormation template will create TomCat Web Server, Jenkins Server, and 2
  - The Class B of the VPC (10.xxx.0.0/16), so if you enter 10, it will be 10.10.0.0/16
 
 
-[![N|Solid](https://test)](https://test)
+![N|Solid](https://raw.githubusercontent.com/meniem/aws-three-tier/master/parameters.jpg)
 
 
 # The CloudFormation will provision:
